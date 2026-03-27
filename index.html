@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#050608" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <title>Lunar pareidolia archive</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="css/styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="app">
+      <div
+        id="welcome-overlay"
+        class="welcome-overlay hidden"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="welcome-title"
+        aria-describedby="welcome-a11y"
+      >
+        <div class="welcome-glass">
+          <h1 id="welcome-title" class="welcome-headline">What do you see on the moon?</h1>
+          <p id="welcome-a11y" class="sr-only">
+            Explore to view and orbit the moon, or open the archive. Use the brush to draw when exploring.
+          </p>
+          <div class="welcome-actions" role="group" aria-label="Get started">
+            <button type="button" id="btn-welcome-explore" class="welcome-btn welcome-btn-explore">Explore</button>
+            <button type="button" id="btn-welcome-archive" class="welcome-btn welcome-btn-archive">Archive</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+      <div
+        id="similar-panel"
+        class="similar-panel hidden"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="similar-panel-title"
+      >
+        <div class="similar-panel__card">
+          <h2 id="similar-panel-title" class="similar-panel__title">They saw something similar</h2>
+          <ul id="similar-list" class="similar-picks" role="list"></ul>
+          <button type="button" id="btn-similar-close" class="similar-panel__close">Continue to archive</button>
+        </div>
+      </div>
+
+      <canvas id="c" aria-label="Interactive 3D Moon"></canvas>
+      <div id="moon-archive-tags" class="moon-archive-tags" aria-hidden="true"></div>
+
+      <button type="button" id="btn-archive-fab" class="archive-fab" aria-label="Open archive">
+        <span class="archive-fab__label">Archive</span>
+      </button>
+
+      <div class="corner-tl">
+        <p class="status status--corner" id="load-status" aria-live="polite"></p>
+      </div>
+
+      <div class="data-credit">
+        <a
+          class="data-credit__link"
+          href="https://svs.gsfc.nasa.gov/14959"
+          target="_blank"
+          rel="noopener noreferrer"
+          >Data: NASA LRO</a
+        >
+      </div>
+
+      <button
+        type="button"
+        id="btn-brush"
+        class="fab-brush"
+        aria-label="Draw on the moon with the brush"
+        aria-pressed="false"
+        title="Brush — draw on the moon"
+      >
+        <span class="fab-brush__mark" aria-hidden="true">
+          <svg class="fab-brush__icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path
+              fill="currentColor"
+              d="M18.5 2.5a2.12 2.12 0 0 1 3 3L10 17l-4 1 1-4L18.5 2.5z"
+              opacity="0.92"
+            />
+            <path
+              fill="currentColor"
+              d="M3 19.5h6v2H3v-2z"
+            />
+            <path
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.25"
+              stroke-linecap="round"
+              d="M15 6.5l2.5 2.5"
+              opacity="0.85"
+            />
+          </svg>
+        </span>
+        <span class="fab-brush__label">Brush</span>
+      </button>
+
+      <div id="brush-hint" class="brush-hint hidden" role="dialog" aria-labelledby="brush-hint-text" aria-modal="false">
+        <p id="brush-hint-text" class="brush-hint__text">
+          Click <span class="brush-hint__kbd">Brush</span> to stop orbiting and draw on the moon.
+        </p>
+        <button type="button" class="brush-hint__close" aria-label="Dismiss">✕</button>
+      </div>
+
+      <div id="draw-palette" class="draw-palette hidden" aria-label="Drawing tools">
+        <button
+          type="button"
+          id="btn-palette-expand"
+          class="draw-palette__peek"
+          aria-controls="draw-palette-inner"
+          aria-expanded="false"
+          aria-label="Open palette"
+        >
+          <svg
+            class="draw-palette__peek-icon"
+            viewBox="0 0 24 24"
+            width="24"
+            height="24"
+            xmlns="http://www.w3.org/2000/svg"
+            aria-hidden="true"
+          >
+            <path
+              fill="currentColor"
+              d="M5 6.5h14v1.5H5V6.5zm0 5h14v1.5H5v-1.5zm0 5h14v1.5H5V16.5z"
+            />
+          </svg>
+        </button>
+        <div class="draw-palette__inner" id="draw-palette-inner">
+          <span class="draw-palette__title">Palette</span>
+          <div class="draw-tools-inner">
+            <div class="draw-tools-row">
+              <input type="color" id="draw-color" value="#ffcc66" title="Stroke color" aria-label="Stroke color" />
+              <button type="button" id="btn-undo" class="btn-palette-icon" title="Undo" aria-label="Undo last stroke">
+                <svg class="btn-palette-icon__svg" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                  <path
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.75"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 6 6v0a6 6 0 0 1-6 6H9"
+                  />
+                </svg>
+              </button>
+              <button type="button" id="btn-clear" class="btn-ghost btn-palette-clear">Clear</button>
+            </div>
+            <label class="brush-label">
+              <span class="visually-hidden">Size</span>
+              <input type="range" id="draw-width" min="1" max="12" value="2" aria-label="Brush size" />
+            </label>
+          </div>
+          <div class="save-row-palette">
+            <div class="save-name-wrap">
+              <label class="save-label" for="entry-title">Name</label>
+              <input
+                type="text"
+                id="entry-title"
+                placeholder="e.g. Yoda"
+                maxlength="80"
+                autocomplete="name"
+                aria-describedby="name-hint"
+              />
+              <p class="save-hint" id="name-hint">Required before saving.</p>
+              <button type="button" id="btn-save" class="btn-primary">Save</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <aside class="archive-panel hidden" id="archive-panel" aria-label="Archive">
+        <header class="archive-head">
+          <div class="archive-head-text">
+            <h2>Archive</h2>
+          </div>
+          <button type="button" id="btn-close-archive" class="icon-close" aria-label="Close archive">✕</button>
+        </header>
+        <ul class="archive-list" id="list-archive"></ul>
+      </aside>
+    </div>
+
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>

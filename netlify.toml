@@ -1,0 +1,10 @@
+[build]
+  publish = "."
+  functions = "netlify/functions"
+
+# Same URL as local server.js so the existing client works unchanged.
+[[redirects]]
+  from = "/api/archive"
+  to = "/.netlify/functions/archive"
+  status = 200
+  force = true
