@@ -37,6 +37,24 @@ function json(res, status, obj) {
   res.end(body);
 }
 
+function getClientIp(req) {
+  const xff = req.headers["x-forwarded-for"];
+  if (xff) {
+    const first = String(xff).split(",")[0].trim();
+    if (first) return first.slice(0, 45);
+  }
+  const ra = req.socket?.remoteAddress || "";
+  if (ra) return String(ra).replace(/^::ffff:/, "").slice(0, 45);
+  return "";
+}
+
+function entryForPublic(e) {
+  if (!e || typeof e !== "object") return e;
+  const out = { ...e };
+  delete out.submittedIp;
+  return out;
+}
+
 function validateEntry(e) {
   if (!e || typeof e !== "object") return null;
   if (typeof e.id !== "string" || e.id.length < 1 || e.id.length > 120) return null;
@@ -63,7 +81,61 @@ async function readArchiveArray() {
 
 async function handleGetArchive(res) {
   const arr = await readArchiveArray();
-  json(res, 200, arr);
+  json(res, 200, arr.map(entryForPublic));
+}
+
+function adminPasswordOk(pw) {
+  const expected = process.env.ARCHIVE_ADMIN_PASSWORD || "391612";
+  return typeof pw === "string" && pw === expected;
+}
+
+async function handleAdminPost(res, body) {
+  if (!adminPasswordOk(body.password)) {
+    json(res, 403, { ok: false, error: "forbidden" });
+    return;
+  }
+  if (body.action === "list") {
+    const list = await readArchiveArray();
+    json(res, 200, { ok: true, entries: list });
+    return;
+  }
+  const list = await readArchiveArray();
+  if (body.action === "delete") {
+    const id = typeof body.id === "string" ? body.id : "";
+    if (!id) {
+      json(res, 400, { ok: false, error: "missing id" });
+      return;
+    }
+    const next = list.filter((x) => x && x.id !== id);
+    if (next.length === list.length) {
+      json(res, 404, { ok: false, error: "not found" });
+      return;
+    }
+    await fs.mkdir(path.dirname(ARCHIVE_PATH), { recursive: true });
+    await fs.writeFile(ARCHIVE_PATH, JSON.stringify(next, null, 2), "utf8");
+    json(res, 200, { ok: true });
+    return;
+  }
+  if (body.action === "updateTitle") {
+    const id = typeof body.id === "string" ? body.id : "";
+    const title = typeof body.title === "string" ? body.title.trim().slice(0, 80) : "";
+    if (!id || !title) {
+      json(res, 400, { ok: false, error: "missing id or title" });
+      return;
+    }
+    const idx = list.findIndex((x) => x && x.id === id);
+    if (idx === -1) {
+      json(res, 404, { ok: false, error: "not found" });
+      return;
+    }
+    const copy = [...list];
+    copy[idx] = { ...copy[idx], title };
+    await fs.mkdir(path.dirname(ARCHIVE_PATH), { recursive: true });
+    await fs.writeFile(ARCHIVE_PATH, JSON.stringify(copy, null, 2), "utf8");
+    json(res, 200, { ok: true });
+    return;
+  }
+  json(res, 400, { ok: false, error: "unknown action" });
 }
 
 async function handlePostArchive(req, res) {
@@ -84,17 +156,24 @@ async function handlePostArchive(req, res) {
     json(res, 400, { ok: false, error: "invalid json" });
     return;
   }
+  if (body.admin === true) {
+    await handleAdminPost(res, body);
+    return;
+  }
   const entry = validateEntry(body.entry);
   if (!entry) {
     json(res, 400, { ok: false, error: "invalid entry" });
     return;
   }
+  const toStore = { ...entry };
+  delete toStore.submittedIp;
+  toStore.submittedIp = getClientIp(req);
   const list = await readArchiveArray();
   if (list.some((x) => x && x.id === entry.id)) {
     json(res, 200, { ok: true, duplicate: true });
     return;
   }
-  list.push(entry);
+  list.push(toStore);
   await fs.mkdir(path.dirname(ARCHIVE_PATH), { recursive: true });
   await fs.writeFile(ARCHIVE_PATH, JSON.stringify(list, null, 2), "utf8");
   json(res, 200, { ok: true });

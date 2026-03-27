@@ -8,12 +8,38 @@ const STORE_NAME = "lunar-pareidolia-archive";
 const BLOB_KEY = "community-entries";
 const MAX_BODY = 600 * 1024;
 
+function adminPasswordOk(pw) {
+  const expected = process.env.ARCHIVE_ADMIN_PASSWORD || "391612";
+  return typeof pw === "string" && pw === expected;
+}
+
 function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
   };
+}
+
+function getClientIp(event) {
+  const h = event.headers || {};
+  const xff = h["x-forwarded-for"] || h["X-Forwarded-For"];
+  if (xff) {
+    const first = String(xff).split(",")[0].trim();
+    if (first) return first.slice(0, 45);
+  }
+  const nf = h["x-nf-client-connection-ip"] || h["X-NF-Client-Connection-IP"];
+  if (nf) return String(nf).trim().slice(0, 45);
+  const clientIp = h["client-ip"] || h["Client-IP"];
+  if (clientIp) return String(clientIp).trim().slice(0, 45);
+  return "";
+}
+
+function entryForPublic(e) {
+  if (!e || typeof e !== "object") return e;
+  const out = { ...e };
+  delete out.submittedIp;
+  return out;
 }
 
 function validateEntry(e) {
@@ -49,7 +75,7 @@ exports.handler = async (event) => {
 
     if (event.httpMethod === "GET") {
       const list = await readList(store);
-      const body = JSON.stringify(list);
+      const body = JSON.stringify(list.map(entryForPublic));
       return {
         statusCode: 200,
         headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
@@ -83,6 +109,80 @@ exports.handler = async (event) => {
       };
     }
 
+    if (body.admin === true) {
+      if (!adminPasswordOk(body.password)) {
+        return {
+          statusCode: 403,
+          headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
+          body: JSON.stringify({ ok: false, error: "forbidden" }),
+        };
+      }
+      const list = await readList(store);
+      if (body.action === "list") {
+        return {
+          statusCode: 200,
+          headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
+          body: JSON.stringify({ ok: true, entries: list }),
+        };
+      }
+      if (body.action === "delete") {
+        const id = typeof body.id === "string" ? body.id : "";
+        if (!id) {
+          return {
+            statusCode: 400,
+            headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
+            body: JSON.stringify({ ok: false, error: "missing id" }),
+          };
+        }
+        const next = list.filter((x) => x && x.id !== id);
+        if (next.length === list.length) {
+          return {
+            statusCode: 404,
+            headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
+            body: JSON.stringify({ ok: false, error: "not found" }),
+          };
+        }
+        await store.setJSON(BLOB_KEY, next);
+        return {
+          statusCode: 200,
+          headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
+          body: JSON.stringify({ ok: true }),
+        };
+      }
+      if (body.action === "updateTitle") {
+        const id = typeof body.id === "string" ? body.id : "";
+        const title = typeof body.title === "string" ? body.title.trim().slice(0, 80) : "";
+        if (!id || !title) {
+          return {
+            statusCode: 400,
+            headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
+            body: JSON.stringify({ ok: false, error: "missing id or title" }),
+          };
+        }
+        const idx = list.findIndex((x) => x && x.id === id);
+        if (idx === -1) {
+          return {
+            statusCode: 404,
+            headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
+            body: JSON.stringify({ ok: false, error: "not found" }),
+          };
+        }
+        const copy = [...list];
+        copy[idx] = { ...copy[idx], title };
+        await store.setJSON(BLOB_KEY, copy);
+        return {
+          statusCode: 200,
+          headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
+          body: JSON.stringify({ ok: true }),
+        };
+      }
+      return {
+        statusCode: 400,
+        headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
+        body: JSON.stringify({ ok: false, error: "unknown action" }),
+      };
+    }
+
     const entry = validateEntry(body.entry);
     if (!entry) {
       return {
@@ -91,6 +191,10 @@ exports.handler = async (event) => {
         body: JSON.stringify({ ok: false, error: "invalid entry" }),
       };
     }
+
+    const toStore = { ...entry };
+    delete toStore.submittedIp;
+    toStore.submittedIp = getClientIp(event);
 
     const list = await readList(store);
     if (list.some((x) => x && x.id === entry.id)) {
@@ -101,7 +205,7 @@ exports.handler = async (event) => {
       };
     }
 
-    list.push(entry);
+    list.push(toStore);
     await store.setJSON(BLOB_KEY, list);
 
     return {

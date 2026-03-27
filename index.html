@@ -66,9 +66,41 @@
       <canvas id="c" aria-label="Interactive 3D Moon"></canvas>
       <div id="moon-archive-tags" class="moon-archive-tags" aria-hidden="true"></div>
 
-      <button type="button" id="btn-archive-fab" class="archive-fab" aria-label="Open archive">
-        <span class="archive-fab__label">Archive</span>
-      </button>
+      <div class="archive-fab-group">
+        <button
+          type="button"
+          id="btn-archive-visibility-fab"
+          class="icon-archive-visibility icon-archive-visibility--fab archive-visibility-sync"
+          aria-pressed="true"
+          aria-label="Hide drawings on moon"
+          title="Show or hide all archive drawings on the moon"
+        >
+          <svg class="icon-archive-visibility__svg icon-archive-visibility__svg--on" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+            <path
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"
+            />
+            <circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+          </svg>
+          <svg class="icon-archive-visibility__svg icon-archive-visibility__svg--off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+            <path
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              d="M10.7 10.7a2 2 0 102.6 2.6M9.9 4.2A9.1 9.1 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.2 3.2M14.1 14.1A9.7 9.7 0 016.1 6.1M2 2l20 20"
+            />
+          </svg>
+        </button>
+        <button type="button" id="btn-archive-fab" class="archive-fab" aria-label="Open archive">
+          <span class="archive-fab__label">Archive</span>
+        </button>
+      </div>
 
       <div class="corner-tl">
         <p class="status status--corner" id="load-status" aria-live="polite"></p>
@@ -193,9 +225,52 @@
           <div class="archive-head-text">
             <h2>Archive</h2>
           </div>
-          <button type="button" id="btn-close-archive" class="icon-close" aria-label="Close archive">✕</button>
+          <div class="archive-head-actions">
+            <button
+              type="button"
+              id="btn-archive-visibility"
+              class="icon-archive-visibility archive-visibility-sync"
+              aria-pressed="true"
+              aria-label="Hide drawings on moon"
+              title="Show or hide all archive drawings on the moon"
+            >
+              <svg class="icon-archive-visibility__svg icon-archive-visibility__svg--on" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+                <path
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"
+                />
+                <circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+              </svg>
+              <svg class="icon-archive-visibility__svg icon-archive-visibility__svg--off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+                <path
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M10.7 10.7a2 2 0 102.6 2.6M9.9 4.2A9.1 9.1 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.2 3.2M14.1 14.1A9.7 9.7 0 016.1 6.1M2 2l20 20"
+                />
+              </svg>
+            </button>
+            <button type="button" id="btn-close-archive" class="icon-close" aria-label="Close archive">✕</button>
+          </div>
         </header>
         <ul class="archive-list" id="list-archive"></ul>
+        <footer class="archive-panel__footer">
+          <button
+            type="button"
+            id="btn-archive-admin"
+            class="btn-archive-admin"
+            aria-pressed="false"
+            aria-label="Admin mode for editing the archive"
+          >
+            Admin
+          </button>
+        </footer>
       </aside>
     </div>
 

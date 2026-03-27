@@ -47,6 +47,29 @@ export async function fetchCommunityArchive(baseUrl) {
   return [];
 }
 
+/** Full shared list including `submittedIp` (admin password). Returns null if unavailable or forbidden. */
+export async function fetchCommunityArchiveAdmin(baseUrl, password) {
+  const res = await archiveAdminPost(baseUrl, { action: "list", password });
+  if (!res.ok || !Array.isArray(res.data?.entries)) return null;
+  return res.data.entries;
+}
+
+/** Admin-only POST: delete or rename in shared archive (password checked server-side). */
+export async function archiveAdminPost(baseUrl, payload) {
+  try {
+    const apiUrl = new URL("api/archive", baseUrl).href;
+    const r = await fetch(apiUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ admin: true, ...payload }),
+    });
+    const data = await r.json().catch(() => ({}));
+    return { ok: r.ok && data.ok === true, status: r.status, data };
+  } catch {
+    return { ok: false, status: 0, data: {} };
+  }
+}
+
 /** POST one entry to the shared archive (Node server). No-op failure if API missing. */
 export async function pushSharedArchiveEntry(baseUrl, entry) {
   try {
@@ -187,32 +210,76 @@ export function strokesToThumbnailCropped(ctx, strokes, width, height, options =
 
   if (!any) return;
 
-  let du = maxU - minU;
-  let dv = maxV - minV;
-  if (du < minSpan) {
-    const c = (minU + maxU) * 0.5;
-    du = minSpan;
-    minU = c - du * 0.5;
-    maxU = c + du * 0.5;
-  }
-  if (dv < minSpan) {
-    const c = (minV + maxV) * 0.5;
-    dv = minSpan;
-    minV = c - dv * 0.5;
-    maxV = c + dv * 0.5;
+  const fixedUvSpan = options.fixedUvSpan;
+  let du;
+  let dv;
+
+  if (fixedUvSpan != null && fixedUvSpan > 0) {
+    const cu = (minU + maxU) * 0.5;
+    const cv = (minV + maxV) * 0.5;
+    const f = fixedUvSpan;
+    minU = cu - f * 0.5;
+    maxU = cu + f * 0.5;
+    minV = cv - f * 0.5;
+    maxV = cv + f * 0.5;
+    if (minU < 0) {
+      maxU -= minU;
+      minU = 0;
+    }
+    if (maxU > 1) {
+      const o = maxU - 1;
+      minU -= o;
+      maxU = 1;
+      if (minU < 0) minU = 0;
+    }
+    if (minV < 0) {
+      maxV -= minV;
+      minV = 0;
+    }
+    if (maxV > 1) {
+      const o = maxV - 1;
+      minV -= o;
+      maxV = 1;
+      if (minV < 0) minV = 0;
+    }
+    const pEdge = f * (options.innerPad ?? 0);
+    if (pEdge > 0) {
+      minU = clampNum(minU + pEdge, 0, 1);
+      maxU = clampNum(maxU - pEdge, 0, 1);
+      minV = clampNum(minV + pEdge, 0, 1);
+      maxV = clampNum(maxV - pEdge, 0, 1);
+    }
+    du = maxU - minU;
+    dv = maxV - minV;
+  } else {
+    du = maxU - minU;
+    dv = maxV - minV;
+    if (du < minSpan) {
+      const c = (minU + maxU) * 0.5;
+      du = minSpan;
+      minU = c - du * 0.5;
+      maxU = c + du * 0.5;
+    }
+    if (dv < minSpan) {
+      const c = (minV + maxV) * 0.5;
+      dv = minSpan;
+      minV = c - dv * 0.5;
+      maxV = c + dv * 0.5;
+    }
+
+    const pEdge = Math.max(du, dv) * pad;
+    minU -= pEdge;
+    maxU += pEdge;
+    minV -= pEdge;
+    maxV += pEdge;
+    minU = clampNum(minU, 0, 1);
+    maxU = clampNum(maxU, 0, 1);
+    minV = clampNum(minV, 0, 1);
+    maxV = clampNum(maxV, 0, 1);
+    du = maxU - minU;
+    dv = maxV - minV;
   }
 
-  const pEdge = Math.max(du, dv) * pad;
-  minU -= pEdge;
-  maxU += pEdge;
-  minV -= pEdge;
-  maxV += pEdge;
-  minU = clampNum(minU, 0, 1);
-  maxU = clampNum(maxU, 0, 1);
-  minV = clampNum(minV, 0, 1);
-  maxV = clampNum(maxV, 0, 1);
-  du = maxU - minU;
-  dv = maxV - minV;
   if (du < 1e-5) du = 0.02;
   if (dv < 1e-5) dv = 0.02;
 

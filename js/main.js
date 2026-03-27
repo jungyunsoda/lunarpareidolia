@@ -5,7 +5,9 @@ import {
   loadLocalEntries,
   saveLocalEntries,
   fetchCommunityArchive,
+  fetchCommunityArchiveAdmin,
   pushSharedArchiveEntry,
+  archiveAdminPost,
   createDrawSurface,
   strokesToCanvas,
   strokesToThumbnailCropped,
@@ -63,6 +65,7 @@ const entryTitle = document.getElementById("entry-title");
 const archivePanel = document.getElementById("archive-panel");
 const btnCloseArchive = document.getElementById("btn-close-archive");
 const listArchive = document.getElementById("list-archive");
+const btnArchiveAdmin = document.getElementById("btn-archive-admin");
 const moonArchiveTagsEl = document.getElementById("moon-archive-tags");
 const welcomeOverlay = document.getElementById("welcome-overlay");
 const btnWelcomeArchive = document.getElementById("btn-welcome-archive");
@@ -142,6 +145,8 @@ const doodleMaterial = new THREE.MeshBasicMaterial({
 
 let moonRaycastMeshes = [];
 let overlayInnerMeshes = [];
+/** When false, pareidolia overlay meshes and floating archive tags are hidden (moon base still visible). */
+let archiveMoonDrawingsVisible = true;
 
 const strokes = [];
 let drawingStroke = null;
@@ -155,6 +160,9 @@ let touchDrawPending = null;
 let communityEntries = [];
 
 const SIMILAR_BTN_ICON = `<svg class="archive-list__similar__icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="9.25" cy="12" r="4.25" fill="none" stroke="currentColor" stroke-width="1.65"/><circle cx="14.75" cy="12" r="4.25" fill="none" stroke="currentColor" stroke-width="1.65"/></svg>`;
+
+const ARCHIVE_ADMIN_PASS = "391612";
+const ARCHIVE_ADMIN_SESSION_KEY = "lunarPareidoliaArchiveAdmin_v1";
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -173,10 +181,10 @@ async function openArchiveFromWelcome() {
     archivePanel.classList.remove("hidden");
     buildMoonArchiveTags();
     const base = document.baseURI || window.location.href;
-    const raw = await fetchCommunityArchive(base);
-    communityEntries = (Array.isArray(raw) ? raw : []).map(normalizeEntry).filter(Boolean);
+    await loadCommunityEntriesForSession(base);
     renderArchiveLists();
     await applyAllArchivesToMoon({ silent: true });
+    syncArchiveFabVisibilityButton();
   } catch (e) {
     console.error(e);
     setStatus("Could not load archive.");
@@ -378,6 +386,26 @@ function clearOverlayLayer() {
   moonRaycastMeshes = [];
 }
 
+function applyArchiveMoonDrawingsVisibility() {
+  const v = archiveMoonDrawingsVisible;
+  for (const m of overlayInnerMeshes) {
+    if (m) m.visible = v;
+  }
+  moonArchiveTagsEl?.classList.toggle("moon-archive-tags--drawings-hidden", !v);
+  document.querySelectorAll(".archive-visibility-sync").forEach((btn) => {
+    btn.setAttribute("aria-pressed", v ? "true" : "false");
+    btn.setAttribute("aria-label", v ? "Hide drawings on moon" : "Show drawings on moon");
+  });
+}
+
+/** FAB eye is redundant while the archive panel is open (header has the same control). */
+function syncArchiveFabVisibilityButton() {
+  const fabEye = document.getElementById("btn-archive-visibility-fab");
+  if (!fabEye) return;
+  const panelOpen = !archivePanel.classList.contains("hidden");
+  fabEye.classList.toggle("icon-archive-visibility--fab-hidden", panelOpen);
+}
+
 function setupPareidoliaLayer() {
   clearOverlayLayer();
   if (!moonRoot) return;
@@ -389,6 +417,7 @@ function setupPareidoliaLayer() {
     inner.userData.pareidoliaOverlay = true;
     inner.scale.setScalar(1.008);
     inner.renderOrder = 1;
+    inner.visible = archiveMoonDrawingsVisible;
     child.add(inner);
     overlayInnerMeshes.push(inner);
   });
@@ -413,6 +442,10 @@ function segmentOnCanvas(u0, v0, u1, v1) {
   drawCtx.lineTo(b.x, b.y);
   drawCtx.stroke();
   drawTexture.needsUpdate = true;
+}
+
+function clampNum(x, lo, hi) {
+  return Math.max(lo, Math.min(hi, x));
 }
 
 const _uvTri = new THREE.Triangle();
@@ -514,30 +547,38 @@ function worldPointFromUvRaycast(meshes, u, v) {
   return h?.point ? h.point.clone() : null;
 }
 
-/**
- * Mean UV for framing. U uses circular stats in the SAME phase as mesh / spherical mapping:
- * angle = (u - 0.5)·2π (NOT u·2π). Using u·2π shifts the mean by 0.5 in U → camera on the opposite side of the moon.
- */
-function strokeCentroidUv(strokeList) {
-  let sumCos = 0;
-  let sumSin = 0;
-  let sv = 0;
+/** Average outward direction of all stroke sample points on the sphere (handles UV seam cleanly). */
+function meanDirectionUnitFromStrokes(strokeList, out) {
+  out.set(0, 0, 0);
   let n = 0;
-  for (const s of strokeList) {
-    for (const p of s.points) {
-      const u = p[0];
-      const v = p[1];
-      const ang = (u - 0.5) * Math.PI * 2;
-      sumCos += Math.cos(ang);
-      sumSin += Math.sin(ang);
-      sv += v;
+  for (const s of strokeList || []) {
+    for (const p of s.points || []) {
+      const u = Number(p[0]);
+      const v = Number(p[1]);
+      if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
+      uvToWorldUnitDir(u, v, _uvDirScratch);
+      out.add(_uvDirScratch);
       n++;
     }
   }
-  if (!n) return { u: 0.5, v: 0.5 };
-  let u = Math.atan2(sumSin, sumCos) / (Math.PI * 2) + 0.5;
+  if (!n) {
+    out.set(0, 0, 1);
+    return out;
+  }
+  if (out.lengthSq() < 1e-14) {
+    out.set(0, 0, 1);
+    return out;
+  }
+  return out.normalize();
+}
+
+function unitDirectionToUv(dir) {
+  const lat = Math.asin(clampNum(dir.y, -1, 1));
+  const lon = Math.atan2(dir.x, dir.z);
+  let u = lon / (Math.PI * 2) + 0.5;
   u -= Math.floor(u);
-  return { u, v: sv / n };
+  const v = clampNum(0.5 - lat / Math.PI, 0, 1);
+  return { u, v };
 }
 
 function pickMajorityModelId(entries) {
@@ -555,12 +596,12 @@ function pickMajorityModelId(entries) {
 }
 
 /**
- * Surface point to frame an entry: prefer raycast along saved draw directions (anchorDir),
- * captured at pointer-down from the real hit — avoids UV↔mesh reconstruction errors.
+ * Raycast from moon center along the first saved anchor (pointer-down direction).
+ * We do not average multiple anchors — vector mean on the sphere points the wrong way for multi-stroke doodles.
  */
 function entryFramingSurfacePoint(entry) {
-  const dirs = [];
-  for (const s of entry.strokes) {
+  const baseMeshes = moonRaycastMeshes.filter((m) => !m.userData.pareidoliaOverlay);
+  for (const s of entry.strokes || []) {
     if (!Array.isArray(s.anchorDir) || s.anchorDir.length < 3) continue;
     const d = new THREE.Vector3(
       Number(s.anchorDir[0]),
@@ -568,31 +609,78 @@ function entryFramingSurfacePoint(entry) {
       Number(s.anchorDir[2])
     );
     if (d.lengthSq() < 1e-14) continue;
-    dirs.push(d.clone().normalize());
+    d.normalize();
+    raycaster.set(moonAnchorCenter, d);
+    raycaster.near = 0;
+    raycaster.far = Math.max(moonHullRadius * 25, 50);
+    const hits = raycaster.intersectObjects(baseMeshes, false);
+    if (hits[0]?.point) return hits[0].point.clone();
+    return moonAnchorCenter.clone().add(d.multiplyScalar(moonHullRadius));
   }
-  if (!dirs.length) return null;
-  const mean = new THREE.Vector3(0, 0, 0);
-  for (const d of dirs) mean.add(d);
-  if (mean.lengthSq() < 1e-14) return null;
-  const dir = mean.normalize();
+  return null;
+}
+
+function unwrapUChain(us) {
+  if (!us.length) return [];
+  const uu = [us[0]];
+  for (let i = 1; i < us.length; i++) {
+    let u = us[i];
+    const prev = uu[uu.length - 1];
+    while (u - prev > 0.5) u -= 1;
+    while (prev - u > 0.5) u += 1;
+    uu.push(u);
+  }
+  return uu;
+}
+
+/**
+ * Framing from stroke UVs resolved on the actual GLB (texture space → mesh), with U unwrapped across the seam.
+ */
+function framingWorldPointFromMeshUvMean(entry) {
   const baseMeshes = moonRaycastMeshes.filter((m) => !m.userData.pareidoliaOverlay);
-  raycaster.set(moonAnchorCenter, dir);
-  raycaster.near = 0;
-  raycaster.far = Math.max(moonHullRadius * 25, 50);
-  const hits = raycaster.intersectObjects(baseMeshes, false);
-  if (hits[0]?.point) return hits[0].point.clone();
-  return moonAnchorCenter.clone().add(dir.clone().multiplyScalar(moonHullRadius));
+  const flatU = [];
+  const flatV = [];
+  for (const s of entry.strokes || []) {
+    for (const p of s.points || []) {
+      const u = Number(p[0]);
+      const v = Number(p[1]);
+      if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
+      flatU.push(u);
+      flatV.push(v);
+    }
+  }
+  if (!flatU.length) return null;
+  const uu = unwrapUChain(flatU);
+  let meanU = uu.reduce((a, b) => a + b, 0) / uu.length;
+  const meanV = flatV.reduce((a, b) => a + b, 0) / flatV.length;
+  meanU -= Math.floor(meanU);
+  if (meanU < 0) meanU += 1;
+  const vClamped = clampNum(meanV, 0, 1);
+  let wp = worldPointFromUvMeshes(baseMeshes, meanU, vClamped);
+  if (!wp) wp = worldPointFromUvRaycast(baseMeshes, meanU, vClamped);
+  if (!wp) wp = worldPointFromUvSpherical(meanU, vClamped);
+  return wp;
 }
 
 function framingWorldPointFromEntryStrokes(entry) {
   moonRoot?.updateMatrixWorld(true);
-  let wp = entryFramingSurfacePoint(entry);
-  if (wp) return wp;
-  const { u, v } = strokeCentroidUv(entry.strokes);
-  const baseMeshes = moonRaycastMeshes.filter((m) => !m.userData.pareidoliaOverlay);
-  wp = worldPointFromUvMeshes(baseMeshes, u, v);
-  if (!wp) wp = worldPointFromUvRaycast(baseMeshes, u, v);
-  if (!wp) wp = worldPointFromUvSpherical(u, v);
+  let wp = framingWorldPointFromMeshUvMean(entry);
+  if (!wp) wp = entryFramingSurfacePoint(entry);
+  if (!wp) {
+    meanDirectionUnitFromStrokes(entry.strokes, _meanStrokeDir);
+    const baseMeshes = moonRaycastMeshes.filter((m) => !m.userData.pareidoliaOverlay);
+    raycaster.set(moonAnchorCenter, _meanStrokeDir);
+    raycaster.near = 0;
+    raycaster.far = Math.max(moonHullRadius * 25, 50);
+    const rayHits = raycaster.intersectObjects(baseMeshes, false);
+    if (rayHits[0]?.point) wp = rayHits[0].point.clone();
+    else {
+      const { u, v } = unitDirectionToUv(_meanStrokeDir);
+      wp = worldPointFromUvMeshes(baseMeshes, u, v);
+      if (!wp) wp = worldPointFromUvRaycast(baseMeshes, u, v);
+      if (!wp) wp = worldPointFromUvSpherical(u, v);
+    }
+  }
   return wp;
 }
 
@@ -623,7 +711,23 @@ async function focusOrbitOnEntry(entry) {
   controls.minDistance = moonHullRadius + surfaceGap;
   controls.maxDistance = moonHullRadius * 28;
   controls.target.copy(moonAnchorCenter);
-  const orbitDist = moonHullRadius * 2.6;
+  const baseMeshes = moonRaycastMeshes.filter((m) => !m.userData.pareidoliaOverlay);
+  let maxSpread = 0.04;
+  for (const s of norm.strokes) {
+    for (const p of s.points || []) {
+      const u = Number(p[0]);
+      const v = Number(p[1]);
+      if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
+      const hit = worldPointFromUvMeshes(baseMeshes, u, v);
+      if (!hit) continue;
+      const sampleDir = hit.clone().sub(moonAnchorCenter);
+      if (sampleDir.lengthSq() < 1e-14) continue;
+      sampleDir.normalize();
+      const dot = clampNum(sampleDir.dot(dir), -1, 1);
+      maxSpread = Math.max(maxSpread, Math.acos(dot));
+    }
+  }
+  const orbitDist = moonHullRadius * clampNum(1.2 + 2.35 * maxSpread, 1.18, 3.25);
   camera.position.copy(moonAnchorCenter.clone().add(dir.multiplyScalar(orbitDist)));
   camera.up.set(0, 1, 0);
   camera.lookAt(moonAnchorCenter);
@@ -697,6 +801,10 @@ function setDrawPaletteExpanded(expanded) {
 }
 
 function setMode(orbit, { skipBrushHint = false } = {}) {
+  if (!orbit) {
+    strokes.length = 0;
+    refreshDrawTexture();
+  }
   isDrawMode = !orbit;
   controls.enabled = true;
   if (orbit) {
@@ -734,20 +842,34 @@ function setMode(orbit, { skipBrushHint = false } = {}) {
   }
 }
 
+async function loadCommunityEntriesForSession(base) {
+  const baseUrl = base || document.baseURI || window.location.href;
+  if (isArchiveAdminUnlocked()) {
+    const rawAdmin = await fetchCommunityArchiveAdmin(baseUrl, ARCHIVE_ADMIN_PASS);
+    if (rawAdmin != null) {
+      communityEntries = rawAdmin.map(normalizeEntry).filter(Boolean);
+      return;
+    }
+  }
+  const raw = await fetchCommunityArchive(baseUrl);
+  communityEntries = (Array.isArray(raw) ? raw : []).map(normalizeEntry).filter(Boolean);
+}
+
 async function openArchive(open) {
   archivePanel.classList.toggle("hidden", !open);
   if (!open) disposeMoonArchiveTags();
   if (open) {
+    syncArchiveAdminButton();
     hideBrushHint(false);
     setMode(true, { skipBrushHint: true });
     buildMoonArchiveTags();
     const base = document.baseURI || window.location.href;
-    const raw = await fetchCommunityArchive(base);
-    communityEntries = (Array.isArray(raw) ? raw : []).map(normalizeEntry).filter(Boolean);
+    await loadCommunityEntriesForSession(base);
     renderArchiveLists();
   } else {
     scheduleBrushHint();
   }
+  syncArchiveFabVisibilityButton();
 }
 
 function normalizeEntry(raw) {
@@ -777,6 +899,8 @@ function normalizeEntry(raw) {
     timeZone: String(raw.timeZone || "").slice(0, 80),
     modelId: typeof raw.modelId === "string" ? raw.modelId : MODELS[0].id,
     strokes: cleaned,
+    submittedIp:
+      typeof raw.submittedIp === "string" ? raw.submittedIp.trim().slice(0, 45) : "",
   };
 }
 
@@ -854,6 +978,34 @@ function getAllArchiveEntriesNormalized() {
 
 const SIM_THUMB_W = 280;
 const SIM_THUMB_H = 140;
+/** Same UV window for every archive / similar thumbnail so list items look equally “big”. */
+const ARCHIVE_THUMB_FIXED_UV = 0.19;
+const LIST_THUMB_PX = 44;
+
+const _meanStrokeDir = new THREE.Vector3();
+const _spreadDir = new THREE.Vector3();
+
+function buildArchiveListThumb(strokes) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const wrap = document.createElement("div");
+  wrap.className = "archive-list__thumb";
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(LIST_THUMB_PX * dpr);
+  canvas.height = Math.round(LIST_THUMB_PX * dpr);
+  canvas.setAttribute("aria-hidden", "true");
+  const ctx = canvas.getContext("2d");
+  if (ctx) {
+    ctx.scale(dpr, dpr);
+    ctx.fillStyle = "#07080e";
+    ctx.fillRect(0, 0, LIST_THUMB_PX, LIST_THUMB_PX);
+    strokesToThumbnailCropped(ctx, strokes, LIST_THUMB_PX, LIST_THUMB_PX, {
+      fixedUvSpan: ARCHIVE_THUMB_FIXED_UV,
+      innerPad: 0.04,
+    });
+  }
+  wrap.appendChild(canvas);
+  return wrap;
+}
 
 function buildSimilarThumbnail(strokes) {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -870,7 +1022,10 @@ function buildSimilarThumbnail(strokes) {
     ctx.scale(dpr, dpr);
     ctx.fillStyle = "#07080e";
     ctx.fillRect(0, 0, cw, ch);
-    strokesToThumbnailCropped(ctx, strokes, cw, ch);
+    strokesToThumbnailCropped(ctx, strokes, cw, ch, {
+      fixedUvSpan: ARCHIVE_THUMB_FIXED_UV,
+      innerPad: 0.04,
+    });
   }
   wrap.appendChild(canvas);
   return wrap;
@@ -934,6 +1089,98 @@ async function dismissSimilarPanelContinue() {
   await openArchive(true);
 }
 
+function isArchiveAdminUnlocked() {
+  try {
+    return sessionStorage.getItem(ARCHIVE_ADMIN_SESSION_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function syncArchiveAdminButton() {
+  if (!btnArchiveAdmin) return;
+  const on = isArchiveAdminUnlocked();
+  btnArchiveAdmin.textContent = on ? "Exit admin" : "Admin";
+  btnArchiveAdmin.setAttribute("aria-pressed", on ? "true" : "false");
+}
+
+function setArchiveAdminUnlocked(on) {
+  try {
+    if (on) sessionStorage.setItem(ARCHIVE_ADMIN_SESSION_KEY, "1");
+    else sessionStorage.removeItem(ARCHIVE_ADMIN_SESSION_KEY);
+  } catch {
+    /* private / blocked storage */
+  }
+  syncArchiveAdminButton();
+}
+
+async function adminRemoveEntry(entry, shared) {
+  if (!window.confirm(`Remove “${entry.title}” from the archive?`)) return;
+  if (!shared) {
+    const next = loadLocalEntries().filter((x) => x.id !== entry.id);
+    saveLocalEntries(next);
+  } else {
+    const base = document.baseURI || window.location.href;
+    const res = await archiveAdminPost(base, {
+      password: ARCHIVE_ADMIN_PASS,
+      action: "delete",
+      id: entry.id,
+    });
+    if (!res.ok) {
+      setStatus(
+        res.status === 403
+          ? "Server rejected the password (set ARCHIVE_ADMIN_PASSWORD on Netlify to 391612 or your chosen secret)."
+          : "Could not remove from shared archive."
+      );
+      return;
+    }
+    await loadCommunityEntriesForSession(base);
+  }
+  setStatus("");
+  renderArchiveLists();
+  if (!archivePanel.classList.contains("hidden")) {
+    buildMoonArchiveTags();
+    await applyAllArchivesToMoon({ silent: true });
+  }
+}
+
+async function adminRenameEntry(entry, shared) {
+  const name = window.prompt("New title:", entry.title);
+  if (name === null) return;
+  const title = name.trim().slice(0, 80);
+  if (!title) {
+    setStatus("Title cannot be empty.");
+    return;
+  }
+  if (!shared) {
+    const next = loadLocalEntries().map((x) => (x.id === entry.id ? { ...x, title } : x));
+    saveLocalEntries(next);
+  } else {
+    const base = document.baseURI || window.location.href;
+    const res = await archiveAdminPost(base, {
+      password: ARCHIVE_ADMIN_PASS,
+      action: "updateTitle",
+      id: entry.id,
+      title,
+    });
+    if (!res.ok) {
+      setStatus(
+        res.status === 403
+          ? "Server rejected the password (set ARCHIVE_ADMIN_PASSWORD on Netlify to match this app)."
+          : "Could not rename on shared archive."
+      );
+      return;
+    }
+    await loadCommunityEntriesForSession(base);
+  }
+  setStatus("");
+  renderArchiveLists();
+  if (!archivePanel.classList.contains("hidden")) {
+    buildMoonArchiveTags();
+    await applyAllArchivesToMoon({ silent: true });
+  }
+}
+
 function renderArchiveLists() {
   const local = loadLocalEntries();
   const localIds = new Set(local.map((e) => e.id));
@@ -954,11 +1201,15 @@ function renderArchiveLists() {
     const li = document.createElement("li");
     const row = document.createElement("div");
     row.className = "archive-list__row";
+    row.appendChild(buildArchiveListThumb(e.strokes || []));
 
     const b = document.createElement("button");
     b.type = "button";
     b.className = "archive-list__open";
-    const meta = formatArchiveMeta(e, shared);
+    let meta = formatArchiveMeta(e, shared);
+    if (isArchiveAdminUnlocked() && shared && e.submittedIp) {
+      meta += ` · IP ${e.submittedIp}`;
+    }
     b.innerHTML = `${escapeHtml(e.title)}<span class="meta">${escapeHtml(meta)}</span>`;
     b.addEventListener("click", () => void focusOrbitOnEntry(e));
 
@@ -975,6 +1226,31 @@ function renderArchiveLists() {
     row.appendChild(b);
     row.appendChild(simBtn);
     li.appendChild(row);
+    if (isArchiveAdminUnlocked()) {
+      const adminRow = document.createElement("div");
+      adminRow.className = "archive-list__admin-row";
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "archive-list__admin-btn";
+      delBtn.textContent = "Remove";
+      delBtn.setAttribute("aria-label", `Remove ${e.title} from archive`);
+      delBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        void adminRemoveEntry(e, shared);
+      });
+      const renBtn = document.createElement("button");
+      renBtn.type = "button";
+      renBtn.className = "archive-list__admin-btn";
+      renBtn.textContent = "Rename";
+      renBtn.setAttribute("aria-label", `Rename ${e.title}`);
+      renBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        void adminRenameEntry(e, shared);
+      });
+      adminRow.appendChild(delBtn);
+      adminRow.appendChild(renBtn);
+      li.appendChild(adminRow);
+    }
     listArchive.appendChild(li);
   }
   if (!archivePanel.classList.contains("hidden")) buildMoonArchiveTags();
@@ -1070,6 +1346,38 @@ btnArchiveFab.addEventListener("click", async () => {
   if (willOpen) await applyAllArchivesToMoon({ silent: true });
 });
 btnCloseArchive.addEventListener("click", () => openArchive(false));
+
+document.querySelectorAll(".archive-visibility-sync").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    archiveMoonDrawingsVisible = !archiveMoonDrawingsVisible;
+    applyArchiveMoonDrawingsVisibility();
+  });
+});
+
+btnArchiveAdmin?.addEventListener("click", () => {
+  if (isArchiveAdminUnlocked()) {
+    setArchiveAdminUnlocked(false);
+    void (async () => {
+      const base = document.baseURI || window.location.href;
+      await loadCommunityEntriesForSession(base);
+      renderArchiveLists();
+    })();
+    return;
+  }
+  const pw = window.prompt("Admin password:");
+  if (pw === null) return;
+  if (pw !== ARCHIVE_ADMIN_PASS) {
+    setStatus("Incorrect password.");
+    return;
+  }
+  setStatus("");
+  setArchiveAdminUnlocked(true);
+  void (async () => {
+    const base = document.baseURI || window.location.href;
+    await loadCommunityEntriesForSession(base);
+    renderArchiveLists();
+  })();
+});
 btnSimilarClose.addEventListener("click", () => void dismissSimilarPanelContinue());
 similarPanel.addEventListener("click", (e) => {
   if (e.target === similarPanel) void dismissSimilarPanelContinue();
@@ -1096,6 +1404,17 @@ btnSave.addEventListener("click", async () => {
     entryTitle.focus();
     return;
   }
+  const strokesSnapshot = strokes.map((s) => {
+    const o = {
+      color: s.color,
+      width: s.width,
+      points: s.points.map((p) => [...p]),
+    };
+    if (Array.isArray(s.anchorDir) && s.anchorDir.length >= 3) {
+      o.anchorDir = [s.anchorDir[0], s.anchorDir[1], s.anchorDir[2]];
+    }
+    return o;
+  });
   setStatus("Saving…");
   const geo = await resolveUserCountry();
   const now = new Date();
@@ -1113,17 +1432,7 @@ btnSave.addEventListener("click", async () => {
     country: geo?.name || "",
     countryCode: geo?.code || "",
     timeZone,
-    strokes: strokes.map((s) => {
-      const o = {
-        color: s.color,
-        width: s.width,
-        points: s.points.map((p) => [...p]),
-      };
-      if (Array.isArray(s.anchorDir) && s.anchorDir.length >= 3) {
-        o.anchorDir = [s.anchorDir[0], s.anchorDir[1], s.anchorDir[2]];
-      }
-      return o;
-    }),
+    strokes: strokesSnapshot,
   });
   const all = loadLocalEntries();
   all.push(entry);
@@ -1142,8 +1451,7 @@ btnSave.addEventListener("click", async () => {
   const archivedAt = performance.now();
   showArchivedFeedback(name);
   entryTitle.value = "";
-  const rawCommunity = await fetchCommunityArchive(base);
-  communityEntries = (Array.isArray(rawCommunity) ? rawCommunity : []).map(normalizeEntry).filter(Boolean);
+  await loadCommunityEntriesForSession(base);
   const pool = getAllArchiveEntriesNormalized();
   const topSimilar = findTopSimilar(entry, pool, { limit: 3 });
   if (topSimilar.length > 0) {
@@ -1312,6 +1620,9 @@ function tick() {
 }
 
 setMode(true);
+syncArchiveAdminButton();
+applyArchiveMoonDrawingsVisibility();
+syncArchiveFabVisibilityButton();
 onResize();
 tick();
 
