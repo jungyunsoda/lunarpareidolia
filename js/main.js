@@ -7,6 +7,7 @@ import {
   fetchCommunityArchive,
   fetchCommunityArchiveAdmin,
   pushSharedArchiveEntry,
+  fetchAiEmbeddings,
   archiveAdminPost,
   createDrawSurface,
   strokesToCanvas,
@@ -14,7 +15,7 @@ import {
   uvToPx,
   UV_JUMP,
 } from "./archive-draw.js";
-import { findTopSimilar } from "./similarity.js";
+import { findTopSimilar, AI_EMB_DIM } from "./similarity.js";
 
 /**
  * NASA SVS — Moon 3D Models for Web, AR, and Animation
@@ -223,6 +224,9 @@ function scheduleBrushHint() {
 }
 
 function showArchivedFeedback(savedTitle) {
+  if (typeof window.matchMedia === "function" && window.matchMedia("(max-width: 640px)").matches) {
+    return;
+  }
   toast.textContent = `Archived · ${savedTitle}`;
   toast.classList.remove("hidden");
   requestAnimationFrame(() => {
@@ -901,6 +905,8 @@ function normalizeEntry(raw) {
     strokes: cleaned,
     submittedIp:
       typeof raw.submittedIp === "string" ? raw.submittedIp.trim().slice(0, 45) : "",
+    embTitle: parseEmbedding(raw.embTitle),
+    embSketch: parseEmbedding(raw.embSketch),
   };
 }
 
@@ -980,6 +986,37 @@ const SIM_THUMB_W = 280;
 const SIM_THUMB_H = 140;
 /** Same UV window for every archive / similar thumbnail so list items look equally “big”. */
 const ARCHIVE_THUMB_FIXED_UV = 0.19;
+const AI_PREVIEW_PX = 384;
+
+function parseEmbedding(raw) {
+  if (!Array.isArray(raw) || raw.length !== AI_EMB_DIM) return null;
+  const out = [];
+  for (let i = 0; i < AI_EMB_DIM; i++) {
+    const n = Number(raw[i]);
+    if (!Number.isFinite(n)) return null;
+    out.push(n);
+  }
+  return out;
+}
+
+function strokesToAiPreviewBase64(strokes) {
+  const w = AI_PREVIEW_PX;
+  const h = AI_PREVIEW_PX;
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d");
+  if (!ctx) return "";
+  ctx.fillStyle = "#07080e";
+  ctx.fillRect(0, 0, w, h);
+  strokesToThumbnailCropped(ctx, strokes, w, h, {
+    fixedUvSpan: ARCHIVE_THUMB_FIXED_UV,
+    innerPad: 0.04,
+  });
+  const dataUrl = c.toDataURL("image/png");
+  const comma = dataUrl.indexOf(",");
+  return comma >= 0 ? dataUrl.slice(comma + 1) : "";
+}
 const LIST_THUMB_PX = 44;
 
 const _meanStrokeDir = new THREE.Vector3();
@@ -1031,11 +1068,27 @@ function buildSimilarThumbnail(strokes) {
   return wrap;
 }
 
-function openSimilarForEntry(rawEntry) {
+async function openSimilarForEntry(rawEntry) {
   const norm = normalizeEntry(rawEntry);
   if (!norm?.strokes?.length) return;
+  let query = norm;
+  if (!query.embTitle?.length) {
+    setStatus("Finding similar…");
+    const base = document.baseURI || window.location.href;
+    const b64 = strokesToAiPreviewBase64(norm.strokes);
+    const em = await fetchAiEmbeddings(base, norm.title, b64);
+    setStatus("");
+    const et = parseEmbedding(em.title);
+    if (et) {
+      query = {
+        ...norm,
+        embTitle: et,
+        embSketch: parseEmbedding(em.sketch),
+      };
+    }
+  }
   const pool = getAllArchiveEntriesNormalized();
-  const matches = findTopSimilar(norm, pool, { limit: 3 });
+  const matches = findTopSimilar(query, pool, { limit: 3 });
   if (!matches.length) {
     setStatus("No similar drawings found.");
     return;
@@ -1206,10 +1259,7 @@ function renderArchiveLists() {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "archive-list__open";
-    let meta = formatArchiveMeta(e, shared);
-    if (isArchiveAdminUnlocked() && shared && e.submittedIp) {
-      meta += ` · IP ${e.submittedIp}`;
-    }
+    const meta = formatArchiveMeta(e, shared);
     b.innerHTML = `${escapeHtml(e.title)}<span class="meta">${escapeHtml(meta)}</span>`;
     b.addEventListener("click", () => void focusOrbitOnEntry(e));
 
@@ -1220,13 +1270,23 @@ function renderArchiveLists() {
     simBtn.setAttribute("aria-label", `Similar drawings to ${e.title}`);
     simBtn.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      openSimilarForEntry(e);
+      void openSimilarForEntry(e);
     });
 
     row.appendChild(b);
     row.appendChild(simBtn);
     li.appendChild(row);
     if (isArchiveAdminUnlocked()) {
+      const ipLine = document.createElement("p");
+      ipLine.className = "archive-list__admin-ip";
+      if (shared) {
+        const ip = typeof e.submittedIp === "string" ? e.submittedIp.trim() : "";
+        ipLine.textContent = ip ? `IP · ${ip}` : "IP · Not recorded";
+      } else {
+        ipLine.textContent = "IP · This device only (not on shared server)";
+      }
+      li.appendChild(ipLine);
+
       const adminRow = document.createElement("div");
       adminRow.className = "archive-list__admin-row";
       const delBtn = document.createElement("button");
@@ -1438,7 +1498,23 @@ btnSave.addEventListener("click", async () => {
   all.push(entry);
   saveLocalEntries(all);
   const base = document.baseURI || window.location.href;
-  const shared = await pushSharedArchiveEntry(base, entry);
+  const previewPngBase64 = strokesToAiPreviewBase64(strokesSnapshot);
+  const shared = await pushSharedArchiveEntry(base, { ...entry, previewPngBase64 });
+  const embT = parseEmbedding(shared.embeddings?.title);
+  if (shared.ok && embT) {
+    entry.embTitle = embT;
+    entry.embSketch = parseEmbedding(shared.embeddings?.sketch);
+    const all2 = loadLocalEntries();
+    const ix = all2.findIndex((x) => x.id === entry.id);
+    if (ix >= 0) {
+      all2[ix] = {
+        ...all2[ix],
+        embTitle: entry.embTitle,
+        embSketch: entry.embSketch,
+      };
+      saveLocalEntries(all2);
+    }
+  }
   if (!shared.ok) {
     setStatus(
       window.location.hostname.endsWith(".github.io")
@@ -1453,9 +1529,11 @@ btnSave.addEventListener("click", async () => {
   entryTitle.value = "";
   await loadCommunityEntriesForSession(base);
   const pool = getAllArchiveEntriesNormalized();
-  const topSimilar = findTopSimilar(entry, pool, { limit: 3 });
+  const selfFromPool = pool.find((x) => x.id === entry.id);
+  const queryForSimilar = selfFromPool && selfFromPool.embTitle?.length ? selfFromPool : entry;
+  const topSimilar = findTopSimilar(queryForSimilar, pool, { limit: 3 });
   if (topSimilar.length > 0) {
-    const minMsBeforeSimilar = 2600;
+    const minMsBeforeSimilar = 950;
     const elapsed = performance.now() - archivedAt;
     await new Promise((r) => setTimeout(r, Math.max(0, minMsBeforeSimilar - elapsed)));
     showSimilarPanel(topSimilar);

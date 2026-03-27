@@ -3,6 +3,7 @@
  * Rewritten from /api/archive via netlify.toml — same paths as local server.js.
  */
 const { connectLambda, getStore } = require("@netlify/blobs");
+const { computeEmbeddings } = require("./utils/openaiSimilarity");
 
 const STORE_NAME = "lunar-pareidolia-archive";
 const BLOB_KEY = "community-entries";
@@ -196,6 +197,28 @@ exports.handler = async (event) => {
     delete toStore.submittedIp;
     toStore.submittedIp = getClientIp(event);
 
+    const previewRaw = toStore.previewPngBase64;
+    delete toStore.previewPngBase64;
+
+    const apiKey = process.env.OPENAI_API_KEY || "";
+    let embTitle = null;
+    let embSketch = null;
+    if (apiKey && previewRaw) {
+      try {
+        const em = await computeEmbeddings({
+          title: toStore.title,
+          previewPngBase64: previewRaw,
+          apiKey,
+        });
+        embTitle = em.embTitle;
+        embSketch = em.embSketch;
+      } catch (e) {
+        console.error("archive embed:", e.message || e);
+      }
+    }
+    if (embTitle?.length) toStore.embTitle = embTitle;
+    if (embSketch?.length) toStore.embSketch = embSketch;
+
     const list = await readList(store);
     if (list.some((x) => x && x.id === entry.id)) {
       return {
@@ -208,10 +231,14 @@ exports.handler = async (event) => {
     list.push(toStore);
     await store.setJSON(BLOB_KEY, list);
 
+    const payload = { ok: true };
+    if (embTitle?.length || embSketch?.length) {
+      payload.embeddings = { title: embTitle, sketch: embSketch };
+    }
     return {
       statusCode: 200,
       headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
-      body: JSON.stringify({ ok: true }),
+      body: JSON.stringify(payload),
     };
   } catch (err) {
     console.error("archive function:", err);

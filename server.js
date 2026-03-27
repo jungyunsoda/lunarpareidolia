@@ -9,6 +9,7 @@ const path = require("path");
 
 const ROOT = __dirname;
 const ARCHIVE_PATH = path.join(ROOT, "archive", "community.json");
+const { computeEmbeddings } = require(path.join(ROOT, "netlify/functions/utils/openaiSimilarity.js"));
 const PORT = Number(process.env.PORT, 10) || 8765;
 const MAX_BODY = 600 * 1024;
 
@@ -168,6 +169,29 @@ async function handlePostArchive(req, res) {
   const toStore = { ...entry };
   delete toStore.submittedIp;
   toStore.submittedIp = getClientIp(req);
+
+  const previewRaw = toStore.previewPngBase64;
+  delete toStore.previewPngBase64;
+
+  const apiKey = process.env.OPENAI_API_KEY || "";
+  let embTitle = null;
+  let embSketch = null;
+  if (apiKey && previewRaw) {
+    try {
+      const em = await computeEmbeddings({
+        title: toStore.title,
+        previewPngBase64: previewRaw,
+        apiKey,
+      });
+      embTitle = em.embTitle;
+      embSketch = em.embSketch;
+    } catch (e) {
+      console.error("archive embed:", e.message || e);
+    }
+  }
+  if (embTitle?.length) toStore.embTitle = embTitle;
+  if (embSketch?.length) toStore.embSketch = embSketch;
+
   const list = await readArchiveArray();
   if (list.some((x) => x && x.id === entry.id)) {
     json(res, 200, { ok: true, duplicate: true });
@@ -176,7 +200,51 @@ async function handlePostArchive(req, res) {
   list.push(toStore);
   await fs.mkdir(path.dirname(ARCHIVE_PATH), { recursive: true });
   await fs.writeFile(ARCHIVE_PATH, JSON.stringify(list, null, 2), "utf8");
-  json(res, 200, { ok: true });
+  const payload = { ok: true };
+  if (embTitle?.length || embSketch?.length) {
+    payload.embeddings = { title: embTitle, sketch: embSketch };
+  }
+  json(res, 200, payload);
+}
+
+const MAX_EMBED_BODY = 700 * 1024;
+
+async function handlePostEmbed(req, res) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > MAX_EMBED_BODY) {
+      json(res, 413, { ok: false, error: "payload too large" });
+      return;
+    }
+    chunks.push(chunk);
+  }
+  const apiKey = process.env.OPENAI_API_KEY || "";
+  if (!apiKey) {
+    json(res, 503, { ok: false, error: "embeddings unavailable" });
+    return;
+  }
+  let body;
+  try {
+    body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    json(res, 400, { ok: false, error: "invalid json" });
+    return;
+  }
+  try {
+    const title = typeof body.title === "string" ? body.title : "";
+    const previewPngBase64 = typeof body.previewPngBase64 === "string" ? body.previewPngBase64 : "";
+    const { embTitle, embSketch } = await computeEmbeddings({ title, previewPngBase64, apiKey });
+    if (!embTitle?.length) {
+      json(res, 502, { ok: false, error: "embedding failed" });
+      return;
+    }
+    json(res, 200, { ok: true, embeddings: { title: embTitle, sketch: embSketch } });
+  } catch (e) {
+    console.error("embed:", e);
+    json(res, 500, { ok: false, error: "embed error" });
+  }
 }
 
 function safeFilePath(urlPath) {
@@ -247,6 +315,25 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(204, {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+      });
+      res.end();
+      return;
+    }
+    res.writeHead(405);
+    res.end("Method not allowed");
+    return;
+  }
+  if (u.pathname === "/api/embed") {
+    if (req.method === "POST") {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      await handlePostEmbed(req, res);
+      return;
+    }
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
       });
       res.end();

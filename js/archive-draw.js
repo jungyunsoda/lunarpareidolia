@@ -81,9 +81,30 @@ export async function pushSharedArchiveEntry(baseUrl, entry) {
     });
     if (!r.ok) return { ok: false, status: r.status };
     const data = await r.json().catch(() => ({}));
-    return { ok: Boolean(data.ok), duplicate: Boolean(data.duplicate) };
+    return {
+      ok: Boolean(data.ok),
+      duplicate: Boolean(data.duplicate),
+      embeddings: data.embeddings && typeof data.embeddings === "object" ? data.embeddings : null,
+    };
   } catch {
     return { ok: false };
+  }
+}
+
+/** One-off OpenAI vectors (requires OPENAI_API_KEY on server). */
+export async function fetchAiEmbeddings(baseUrl, title, previewPngBase64) {
+  try {
+    const apiUrl = new URL("api/embed", baseUrl).href;
+    const r = await fetch(apiUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, previewPngBase64 }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data.ok || !data.embeddings?.title) return null;
+    return data.embeddings;
+  } catch {
+    return null;
   }
 }
 

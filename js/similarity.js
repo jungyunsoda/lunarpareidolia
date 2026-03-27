@@ -1,6 +1,8 @@
 /**
- * Rank archive entries by shape (stroke layout) and title similarity.
+ * Rank archive entries by AI embeddings (OpenAI) when present, else shape + title heuristics.
  */
+
+export const AI_EMB_DIM = 256;
 
 const GRID_W = 28;
 const GRID_H = 14;
@@ -189,6 +191,37 @@ export function combinedSimilarity(entryA, entryB) {
   return 0.5 * shape + 0.5 * title;
 }
 
+/** Cosine similarity for OpenAI unit vectors → 0..1 */
+function cosineSim01(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length || a.length === 0) return 0;
+  let dot = 0;
+  for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
+  return (dot + 1) / 2;
+}
+
+/**
+ * @returns {number|null} null if AI cannot score this pair
+ */
+export function aiPairSimilarity(entryA, entryB) {
+  const ta = entryA?.embTitle;
+  const tb = entryB?.embTitle;
+  if (!Array.isArray(ta) || !Array.isArray(tb) || ta.length !== AI_EMB_DIM || tb.length !== AI_EMB_DIM) {
+    return null;
+  }
+  const ct = cosineSim01(ta, tb);
+  const sa = entryA?.embSketch;
+  const sb = entryB?.embSketch;
+  if (
+    Array.isArray(sa) &&
+    Array.isArray(sb) &&
+    sa.length === AI_EMB_DIM &&
+    sb.length === AI_EMB_DIM
+  ) {
+    return 0.42 * ct + 0.58 * cosineSim01(sa, sb);
+  }
+  return ct;
+}
+
 /**
  * @param {object} savedEntry — normalized entry just saved
  * @param {object[]} candidates — normalized entries (exclude saved id)
@@ -197,11 +230,18 @@ export function combinedSimilarity(entryA, entryB) {
  */
 export function findTopSimilar(savedEntry, candidates, { limit = 3 } = {}) {
   const id = savedEntry?.id;
+  const queryHasAi = Array.isArray(savedEntry?.embTitle) && savedEntry.embTitle.length === AI_EMB_DIM;
   const scored = [];
   for (const c of candidates) {
     if (!c || c.id === id) continue;
     if (!c.strokes?.length) continue;
-    const score = combinedSimilarity(savedEntry, c);
+    let score;
+    if (queryHasAi) {
+      const ai = aiPairSimilarity(savedEntry, c);
+      score = ai != null ? ai : combinedSimilarity(savedEntry, c);
+    } else {
+      score = combinedSimilarity(savedEntry, c);
+    }
     scored.push({ entry: c, score });
   }
   scored.sort((a, b) => b.score - a.score);

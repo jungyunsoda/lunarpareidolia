@@ -8,3 +8,9 @@
   to = "/.netlify/functions/archive"
   status = 200
   force = true
+
+[[redirects]]
+  from = "/api/embed"
+  to = "/.netlify/functions/embed"
+  status = 200
+  force = true
