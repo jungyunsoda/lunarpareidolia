@@ -91,7 +91,7 @@ export async function pushSharedArchiveEntry(baseUrl, entry) {
   }
 }
 
-/** One-off OpenAI vectors (requires OPENAI_API_KEY on server). */
+/** One-off embedding vectors (requires GEMINI_API_KEY on server). */
 export async function fetchAiEmbeddings(baseUrl, title, previewPngBase64) {
   try {
     const apiUrl = new URL("api/embed", baseUrl).href;

@@ -3,7 +3,7 @@
  * Rewritten from /api/archive via netlify.toml — same paths as local server.js.
  */
 const { connectLambda, getStore } = require("@netlify/blobs");
-const { computeEmbeddings } = require("./utils/openaiSimilarity");
+const { computeEmbeddings } = require("./utils/embeddingProvider");
 
 const STORE_NAME = "lunar-pareidolia-archive";
 const BLOB_KEY = "community-entries";
@@ -200,7 +200,7 @@ exports.handler = async (event) => {
     const previewRaw = toStore.previewPngBase64;
     delete toStore.previewPngBase64;
 
-    const apiKey = process.env.OPENAI_API_KEY || "";
+    const apiKey = process.env.GEMINI_API_KEY || "";
     let embTitle = null;
     let embSketch = null;
     if (apiKey && previewRaw) {

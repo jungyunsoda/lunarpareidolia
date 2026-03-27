@@ -15,7 +15,7 @@ import {
   uvToPx,
   UV_JUMP,
 } from "./archive-draw.js";
-import { findTopSimilar, AI_EMB_DIM } from "./similarity.js";
+import { findTopSimilar, EMBEDDING_DIMS } from "./similarity.js";
 
 /**
  * NASA SVS — Moon 3D Models for Web, AR, and Animation
@@ -174,13 +174,14 @@ function dismissWelcome(openArchiveFirst) {
   if (openArchiveFirst) void openArchiveFromWelcome();
 }
 
-/** Welcome “Archive”: same as FAB archive — show panel and moon tags as soon as the moon exists, then fetch + merge. */
+/** Welcome “Archive”: load shared + local drawings onto the moon; desktop opens the list panel, mobile keeps it closed so the moon stays full-screen. */
 async function openArchiveFromWelcome() {
   setMode(true, { skipBrushHint: true });
   try {
     await initialMoonLoad;
-    archivePanel.classList.remove("hidden");
-    buildMoonArchiveTags();
+    const archivePanelHiddenOnWelcome =
+      typeof window.matchMedia === "function" && window.matchMedia("(max-width: 640px)").matches;
+    if (!archivePanelHiddenOnWelcome) archivePanel.classList.remove("hidden");
     const base = document.baseURI || window.location.href;
     await loadCommunityEntriesForSession(base);
     renderArchiveLists();
@@ -273,7 +274,7 @@ function upgradeLoadedTextures(root) {
   });
 }
 
-/** Screen-space labels on the moon while the archive panel is open. */
+/** Screen-space labels on the moon whenever archive drawings are shown (not tied to the list panel). */
 const moonTagProj = new THREE.Vector3();
 const moonTagToCam = new THREE.Vector3();
 const moonTagOutward = new THREE.Vector3();
@@ -286,7 +287,7 @@ function disposeMoonArchiveTags() {
 
 function buildMoonArchiveTags() {
   disposeMoonArchiveTags();
-  if (!moonArchiveTagsEl || archivePanel.classList.contains("hidden")) return;
+  if (!moonArchiveTagsEl || !archiveMoonDrawingsVisible) return;
   if (!moonRoot || moonHullRadius <= 0) return;
   const baseMeshes = moonRaycastMeshes.filter((m) => !m.userData.pareidoliaOverlay);
   const local = loadLocalEntries();
@@ -315,7 +316,7 @@ function buildMoonArchiveTags() {
 }
 
 function updateMoonArchiveTagPositions() {
-  if (!moonArchiveTagItems.length || archivePanel.classList.contains("hidden")) return;
+  if (!moonArchiveTagItems.length || !archiveMoonDrawingsVisible) return;
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
   for (const t of moonArchiveTagItems) {
@@ -396,6 +397,8 @@ function applyArchiveMoonDrawingsVisibility() {
     if (m) m.visible = v;
   }
   moonArchiveTagsEl?.classList.toggle("moon-archive-tags--drawings-hidden", !v);
+  if (v) buildMoonArchiveTags();
+  else disposeMoonArchiveTags();
   document.querySelectorAll(".archive-visibility-sync").forEach((btn) => {
     btn.setAttribute("aria-pressed", v ? "true" : "false");
     btn.setAttribute("aria-label", v ? "Hide drawings on moon" : "Show drawings on moon");
@@ -775,7 +778,7 @@ async function applyAllArchivesToMoon({ silent = false } = {}) {
     controls.update();
   }
   if (!silent) setStatus("");
-  if (!archivePanel.classList.contains("hidden")) buildMoonArchiveTags();
+  if (archiveMoonDrawingsVisible) buildMoonArchiveTags();
   return entries.length;
 }
 
@@ -861,7 +864,10 @@ async function loadCommunityEntriesForSession(base) {
 
 async function openArchive(open) {
   archivePanel.classList.toggle("hidden", !open);
-  if (!open) disposeMoonArchiveTags();
+  if (!open) {
+    if (archiveMoonDrawingsVisible) buildMoonArchiveTags();
+    else disposeMoonArchiveTags();
+  }
   if (open) {
     syncArchiveAdminButton();
     hideBrushHint(false);
@@ -870,6 +876,7 @@ async function openArchive(open) {
     const base = document.baseURI || window.location.href;
     await loadCommunityEntriesForSession(base);
     renderArchiveLists();
+    await applyAllArchivesToMoon({ silent: true });
   } else {
     scheduleBrushHint();
   }
@@ -989,9 +996,9 @@ const ARCHIVE_THUMB_FIXED_UV = 0.19;
 const AI_PREVIEW_PX = 384;
 
 function parseEmbedding(raw) {
-  if (!Array.isArray(raw) || raw.length !== AI_EMB_DIM) return null;
+  if (!Array.isArray(raw) || !EMBEDDING_DIMS.includes(raw.length)) return null;
   const out = [];
-  for (let i = 0; i < AI_EMB_DIM; i++) {
+  for (let i = 0; i < raw.length; i++) {
     const n = Number(raw[i]);
     if (!Number.isFinite(n)) return null;
     out.push(n);
@@ -1074,20 +1081,28 @@ async function openSimilarForEntry(rawEntry) {
   let query = norm;
   if (!query.embTitle?.length) {
     setStatus("Finding similar…");
-    const base = document.baseURI || window.location.href;
-    const b64 = strokesToAiPreviewBase64(norm.strokes);
-    const em = await fetchAiEmbeddings(base, norm.title, b64);
-    setStatus("");
-    const et = parseEmbedding(em.title);
-    if (et) {
-      query = {
-        ...norm,
-        embTitle: et,
-        embSketch: parseEmbedding(em.sketch),
-      };
+    try {
+      const base = document.baseURI || window.location.href;
+      const b64 = strokesToAiPreviewBase64(norm.strokes);
+      const em = await fetchAiEmbeddings(base, norm.title, b64);
+      const et = em?.title != null ? parseEmbedding(em.title) : null;
+      if (et) {
+        query = {
+          ...norm,
+          embTitle: et,
+          embSketch: parseEmbedding(em.sketch),
+        };
+      }
+    } finally {
+      setStatus("");
     }
   }
   const pool = getAllArchiveEntriesNormalized();
+  const others = pool.filter((e) => e && e.id !== norm.id);
+  if (others.length === 0) {
+    setStatus("No other drawings to compare yet.");
+    return;
+  }
   const matches = findTopSimilar(query, pool, { limit: 3 });
   if (!matches.length) {
     setStatus("No similar drawings found.");
@@ -1192,7 +1207,6 @@ async function adminRemoveEntry(entry, shared) {
   setStatus("");
   renderArchiveLists();
   if (!archivePanel.classList.contains("hidden")) {
-    buildMoonArchiveTags();
     await applyAllArchivesToMoon({ silent: true });
   }
 }
@@ -1229,7 +1243,6 @@ async function adminRenameEntry(entry, shared) {
   setStatus("");
   renderArchiveLists();
   if (!archivePanel.classList.contains("hidden")) {
-    buildMoonArchiveTags();
     await applyAllArchivesToMoon({ silent: true });
   }
 }
@@ -1247,7 +1260,7 @@ function renderArchiveLists() {
   listArchive.innerHTML = "";
   if (!items.length) {
     listArchive.innerHTML = '<li class="meta">No drawings yet.</li>';
-    if (!archivePanel.classList.contains("hidden")) buildMoonArchiveTags();
+    if (archiveMoonDrawingsVisible) buildMoonArchiveTags();
     return;
   }
   for (const { entry: e, shared } of items) {
@@ -1313,7 +1326,7 @@ function renderArchiveLists() {
     }
     listArchive.appendChild(li);
   }
-  if (!archivePanel.classList.contains("hidden")) buildMoonArchiveTags();
+  if (archiveMoonDrawingsVisible) buildMoonArchiveTags();
 }
 
 function escapeHtml(s) {
@@ -1403,7 +1416,6 @@ btnBrush.addEventListener("click", () => {
 btnArchiveFab.addEventListener("click", async () => {
   const willOpen = archivePanel.classList.contains("hidden");
   await openArchive(willOpen);
-  if (willOpen) await applyAllArchivesToMoon({ silent: true });
 });
 btnCloseArchive.addEventListener("click", () => openArchive(false));
 
@@ -1528,6 +1540,9 @@ btnSave.addEventListener("click", async () => {
   showArchivedFeedback(name);
   entryTitle.value = "";
   await loadCommunityEntriesForSession(base);
+  setMode(true, { skipBrushHint: true });
+  await applyAllArchivesToMoon({ silent: true });
+  if (!archivePanel.classList.contains("hidden")) renderArchiveLists();
   const pool = getAllArchiveEntriesNormalized();
   const selfFromPool = pool.find((x) => x.id === entry.id);
   const queryForSimilar = selfFromPool && selfFromPool.embTitle?.length ? selfFromPool : entry;

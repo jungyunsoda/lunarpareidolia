@@ -2,7 +2,7 @@
  * POST /api/embed — one-off OpenAI vectors for similarity (no storage).
  * Body: { title, previewPngBase64 }
  */
-const { computeEmbeddings } = require("./utils/openaiSimilarity");
+const { computeEmbeddings } = require("./utils/embeddingProvider");
 
 function corsHeaders() {
   return {
@@ -25,12 +25,12 @@ exports.handler = async (event) => {
     };
   }
 
-  const apiKey = process.env.OPENAI_API_KEY || "";
+  const apiKey = process.env.GEMINI_API_KEY || "";
   if (!apiKey) {
     return {
       statusCode: 503,
       headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
-      body: JSON.stringify({ ok: false, error: "embeddings unavailable" }),
+      body: JSON.stringify({ ok: false, error: "embeddings unavailable (set GEMINI_API_KEY)" }),
     };
   }
 

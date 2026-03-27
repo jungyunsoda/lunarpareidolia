@@ -2,7 +2,12 @@
  * Rank archive entries by AI embeddings (OpenAI) when present, else shape + title heuristics.
  */
 
-export const AI_EMB_DIM = 256;
+/** Supported vector lengths: legacy OpenAI (256) and Gemini text-embedding-004 (768). */
+export const EMBEDDING_DIMS = Object.freeze([256, 768]);
+
+function isValidEmbLength(len) {
+  return EMBEDDING_DIMS.includes(len);
+}
 
 const GRID_W = 28;
 const GRID_H = 14;
@@ -191,7 +196,7 @@ export function combinedSimilarity(entryA, entryB) {
   return 0.5 * shape + 0.5 * title;
 }
 
-/** Cosine similarity for OpenAI unit vectors → 0..1 */
+/** Cosine similarity (L2-normalized embeddings) → 0..1 */
 function cosineSim01(a, b) {
   if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length || a.length === 0) return 0;
   let dot = 0;
@@ -205,7 +210,12 @@ function cosineSim01(a, b) {
 export function aiPairSimilarity(entryA, entryB) {
   const ta = entryA?.embTitle;
   const tb = entryB?.embTitle;
-  if (!Array.isArray(ta) || !Array.isArray(tb) || ta.length !== AI_EMB_DIM || tb.length !== AI_EMB_DIM) {
+  if (
+    !Array.isArray(ta) ||
+    !Array.isArray(tb) ||
+    ta.length !== tb.length ||
+    !isValidEmbLength(ta.length)
+  ) {
     return null;
   }
   const ct = cosineSim01(ta, tb);
@@ -214,10 +224,11 @@ export function aiPairSimilarity(entryA, entryB) {
   if (
     Array.isArray(sa) &&
     Array.isArray(sb) &&
-    sa.length === AI_EMB_DIM &&
-    sb.length === AI_EMB_DIM
+    sa.length === sb.length &&
+    isValidEmbLength(sa.length)
   ) {
-    return 0.42 * ct + 0.58 * cosineSim01(sa, sb);
+    /* Sketch vector = title + INTERPRETATION/GEOMETRY from vision; dominates vs raw title. */
+    return 0.18 * ct + 0.82 * cosineSim01(sa, sb);
   }
   return ct;
 }
@@ -230,7 +241,7 @@ export function aiPairSimilarity(entryA, entryB) {
  */
 export function findTopSimilar(savedEntry, candidates, { limit = 3 } = {}) {
   const id = savedEntry?.id;
-  const queryHasAi = Array.isArray(savedEntry?.embTitle) && savedEntry.embTitle.length === AI_EMB_DIM;
+  const queryHasAi = Array.isArray(savedEntry?.embTitle) && isValidEmbLength(savedEntry.embTitle.length);
   const scored = [];
   for (const c of candidates) {
     if (!c || c.id === id) continue;

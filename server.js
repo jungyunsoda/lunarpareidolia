@@ -9,7 +9,7 @@ const path = require("path");
 
 const ROOT = __dirname;
 const ARCHIVE_PATH = path.join(ROOT, "archive", "community.json");
-const { computeEmbeddings } = require(path.join(ROOT, "netlify/functions/utils/openaiSimilarity.js"));
+const { computeEmbeddings } = require(path.join(ROOT, "netlify/functions/utils/embeddingProvider.js"));
 const PORT = Number(process.env.PORT, 10) || 8765;
 const MAX_BODY = 600 * 1024;
 
@@ -173,7 +173,7 @@ async function handlePostArchive(req, res) {
   const previewRaw = toStore.previewPngBase64;
   delete toStore.previewPngBase64;
 
-  const apiKey = process.env.OPENAI_API_KEY || "";
+  const apiKey = process.env.GEMINI_API_KEY || "";
   let embTitle = null;
   let embSketch = null;
   if (apiKey && previewRaw) {
@@ -220,9 +220,9 @@ async function handlePostEmbed(req, res) {
     }
     chunks.push(chunk);
   }
-  const apiKey = process.env.OPENAI_API_KEY || "";
+  const apiKey = process.env.GEMINI_API_KEY || "";
   if (!apiKey) {
-    json(res, 503, { ok: false, error: "embeddings unavailable" });
+    json(res, 503, { ok: false, error: "embeddings unavailable (set GEMINI_API_KEY)" });
     return;
   }
   let body;
