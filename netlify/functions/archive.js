@@ -2,7 +2,7 @@
  * Shared archive for production on Netlify (Netlify Blobs).
  * Rewritten from /api/archive via netlify.toml — same paths as local server.js.
  */
-const { getStore } = require("@netlify/blobs");
+const { connectLambda, getStore } = require("@netlify/blobs");
 
 const STORE_NAME = "lunar-pareidolia-archive";
 const BLOB_KEY = "community-entries";
@@ -42,68 +42,79 @@ exports.handler = async (event) => {
     return { statusCode: 204, headers, body: "" };
   }
 
-  const store = getStore(STORE_NAME);
-
-  if (event.httpMethod === "GET") {
-    const list = await readList(store);
-    const body = JSON.stringify(list);
-    return {
-      statusCode: 200,
-      headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
-      body,
-    };
-  }
-
-  if (event.httpMethod !== "POST") {
-    return { statusCode: 405, headers, body: JSON.stringify({ ok: false, error: "method not allowed" }) };
-  }
-
-  const rawBody = event.isBase64Encoded
-    ? Buffer.from(event.body || "", "base64").toString("utf8")
-    : event.body || "";
-  if (Buffer.byteLength(rawBody, "utf8") > MAX_BODY) {
-    return {
-      statusCode: 413,
-      headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
-      body: JSON.stringify({ ok: false, error: "payload too large" }),
-    };
-  }
-
-  let body;
   try {
-    body = JSON.parse(rawBody);
-  } catch {
-    return {
-      statusCode: 400,
-      headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
-      body: JSON.stringify({ ok: false, error: "invalid json" }),
-    };
-  }
+    /* Required for Lambda-style handlers so Blobs env is wired in production */
+    connectLambda(event);
+    const store = getStore(STORE_NAME);
 
-  const entry = validateEntry(body.entry);
-  if (!entry) {
-    return {
-      statusCode: 400,
-      headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
-      body: JSON.stringify({ ok: false, error: "invalid entry" }),
-    };
-  }
+    if (event.httpMethod === "GET") {
+      const list = await readList(store);
+      const body = JSON.stringify(list);
+      return {
+        statusCode: 200,
+        headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
+        body,
+      };
+    }
 
-  const list = await readList(store);
-  if (list.some((x) => x && x.id === entry.id)) {
+    if (event.httpMethod !== "POST") {
+      return { statusCode: 405, headers, body: JSON.stringify({ ok: false, error: "method not allowed" }) };
+    }
+
+    const rawBody = event.isBase64Encoded
+      ? Buffer.from(event.body || "", "base64").toString("utf8")
+      : event.body || "";
+    if (Buffer.byteLength(rawBody, "utf8") > MAX_BODY) {
+      return {
+        statusCode: 413,
+        headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
+        body: JSON.stringify({ ok: false, error: "payload too large" }),
+      };
+    }
+
+    let body;
+    try {
+      body = JSON.parse(rawBody);
+    } catch {
+      return {
+        statusCode: 400,
+        headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
+        body: JSON.stringify({ ok: false, error: "invalid json" }),
+      };
+    }
+
+    const entry = validateEntry(body.entry);
+    if (!entry) {
+      return {
+        statusCode: 400,
+        headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
+        body: JSON.stringify({ ok: false, error: "invalid entry" }),
+      };
+    }
+
+    const list = await readList(store);
+    if (list.some((x) => x && x.id === entry.id)) {
+      return {
+        statusCode: 200,
+        headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
+        body: JSON.stringify({ ok: true, duplicate: true }),
+      };
+    }
+
+    list.push(entry);
+    await store.setJSON(BLOB_KEY, list);
+
     return {
       statusCode: 200,
       headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
-      body: JSON.stringify({ ok: true, duplicate: true }),
+      body: JSON.stringify({ ok: true }),
+    };
+  } catch (err) {
+    console.error("archive function:", err);
+    return {
+      statusCode: 500,
+      headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
+      body: JSON.stringify({ ok: false, error: "archive unavailable" }),
     };
   }
-
-  list.push(entry);
-  await store.setJSON(BLOB_KEY, list);
-
-  return {
-    statusCode: 200,
-    headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
-    body: JSON.stringify({ ok: true }),
-  };
 };

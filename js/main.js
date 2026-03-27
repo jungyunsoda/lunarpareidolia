@@ -1131,7 +1131,11 @@ btnSave.addEventListener("click", async () => {
   const base = document.baseURI || window.location.href;
   const shared = await pushSharedArchiveEntry(base, entry);
   if (!shared.ok) {
-    setStatus("Saved on this device. Start the app with npm start for a shared link archive.");
+    setStatus(
+      window.location.hostname.endsWith(".github.io")
+        ? "Saved on this device. GitHub Pages has no API — open your Netlify site URL to use the shared archive."
+        : "Saved on this device. For a shared archive use Netlify (not static hosting only) or run npm start locally."
+    );
   } else {
     setStatus("");
   }
